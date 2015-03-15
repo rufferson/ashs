@@ -1,0 +1,8 @@
+/.ashs.*
+/.tmp_versions
+/Module.symvers
+/ashs.ko
+/ashs.mod.*
+/ashs.o
+/modules.order
+/nbproject/
