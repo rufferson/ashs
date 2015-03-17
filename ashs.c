@@ -4,11 +4,28 @@
 #include <linux/types.h>
 #include <linux/acpi.h>
 
+#ifdef _INPUT_KILL_
+#include <linux/input.h>
+#include <linux/input/sparse-keymap.h>
+static struct input_dev *inputdev;
+static const struct key_entry ashs_keymap[] = {
+	{ KE_KEY, 0x5D, { KEY_WLAN } }, /* Wireless console Toggle */
+	{ KE_KEY, 0x5E, { KEY_WLAN } }, /* Wireless console Enable */
+	{ KE_KEY, 0x5F, { KEY_WLAN } }, /* Wireless console Disable */
+	{ KE_KEY, 0x7D, { KEY_BLUETOOTH } }, /* Bluetooth Enable */
+	{ KE_KEY, 0x7E, { KEY_BLUETOOTH } }, /* Bluetooth Disable */
+	{ KE_KEY, 0x88, { KEY_RFKILL  } }, /* Radio Toggle Key */
+	{ KE_END, 0},
+};
+#endif
+
 MODULE_AUTHOR("Ruslan Marchenko <me@ruff.mobi>");
 MODULE_DESCRIPTION("ASUS Wireless Radio Control Driver");
 MODULE_LICENSE("GPL");
 
-ACPI_MODULE_NAME("ASHS")
+#define MODULE_NAME "ASHS"
+#define DRIVER_NAME "ashs"
+ACPI_MODULE_NAME(MODULE_NAME)
 
 static int asus_ashs_add(struct acpi_device *dev);
 static int asus_ashs_remove(struct acpi_device *dev);
@@ -25,9 +42,11 @@ int wldp = 0;
 int btdp = 0;
 int wrst = 0;
 int brst = 0;
+bool toggle = true;
+
 static struct acpi_driver asus_ashs_driver = {
-	.name = "ashs",
-	.class = "ASHS",
+	.name  = DRIVER_NAME,
+	.class = MODULE_NAME,
 	.ids = asus_ashs_dev_ids,
 	.ops =
 	{
@@ -74,31 +93,33 @@ static void ashs_refresh_internals(void)
 	btdp = ashs_get_int(NULL,"\\_SB_.BTDP");
 	brst = ashs_get_int(NULL,"\\_SB_.BRST");
 }
-#define ACPI_CR(x,f) if(!ACPI_SUCCESS(x)) ACPI_ERROR((AE_INFO,"Method Execution for %s failed[%d]",f,x))
 static void ashs_toggle_wireless(void) {
+#ifdef	_INPUT_KILL_ // we can certainly re-invent the wheel 
+	sparse_keymap_report_event(inputdev,0x88,1,true);
+#else
 	acpi_status status;
+#define ACPI_CR(x,f) if(!ACPI_SUCCESS(x)) ACPI_ERROR((AE_INFO,"Method Execution for %s failed[%d]",f,x))
 	ashs_refresh_internals();
 	if((wapf & 4)) {
-		// Send key event (software handler)
+		// Send radio toggle event to rfkill 
 		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",0x88);
-	} else if((wapf & 0x1)==0) {
-		// Hardware toggle
-		int key, val;
+		ACPI_CR(status,"_SB_.ATKD.IANE(0x88)");
+	} else if((wapf & 0x2)) {
+		// BThw WLsw
+		int key=0x5D, val=1;
 		if(wrst || brst) {
 			val = 0;
-			key = 0x74;
-		} else {
-			val = 1;
-			key = 0x73;
+			//key = 0x74;
 		}
-		status = acpi_execute_simple_method(NULL,"\\OWGD",val);
-		ACPI_CR(status,"OWGD");
-		status = acpi_execute_simple_method(NULL,"\\OWLD",val);
-		ACPI_CR(status,"OLGD");
-		status = acpi_execute_simple_method(NULL,"\\OBTD",val);
-		ACPI_CR(status,"OBTD");
+		// OWLD doesnt switch off the wireless - is broken
+		//status = acpi_execute_simple_method(NULL,"\\OWGD",val);
+		//ACPI_CR(status,"OWGD");
+		//status = acpi_execute_simple_method(NULL,"\\OWLD",val);
+		//ACPI_CR(status,"OWLD");
 		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",key);
 		ACPI_CR(status,"_SB_.ATKD.IANE");
+		status = acpi_execute_simple_method(NULL,"\\OBTD",val);
+		ACPI_CR(status,"OBTD");
 	} else {
 		// Toggle radios in sequence
 		// Assuming both are off - enable both
@@ -118,17 +139,22 @@ static void ashs_toggle_wireless(void) {
 			wk = 0x5F;
 			bk = 0x7E;
 		}
-		status = acpi_execute_simple_method(NULL,"\\OWGD",(ws || bs));
-		ACPI_CR(status,"OWGD");
-		status = acpi_execute_simple_method(NULL,"\\OWLD",ws);
-		ACPI_CR(status,"OLGD");
-		status = acpi_execute_simple_method(NULL,"\\OBTD",bs);
-		ACPI_CR(status,"OBTD");
+		//status = acpi_execute_simple_method(NULL,"\\OWGD",(ws || bs));
+		//ACPI_CR(status,"OWGD");
+		//status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.CWAP",0);
+		//ACPI_CR(status,"CWAP(0)");
+		//status = acpi_execute_simple_method(NULL,"\\OWLD",ws);
+		//ACPI_CR(status,"OWLD");
+		//status = acpi_execute_simple_method(NULL,"\\OBTD",bs);
+		//ACPI_CR(status,"OBTD");
+		//status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.CWAP",wapf);
+		//ACPI_CR(status,"CWAP(wapf)");
 		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",wk);
 		ACPI_CR(status,"_SB_.ATKD.IANE(W)");
 		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",bk);
 		ACPI_CR(status,"_SB_.ATKD.IANE(B)");
 	}
+#endif /* _INPUT_KILL_ */
 }
 static ssize_t ashs_show_sts(struct device *dev,
 	struct device_attribute *attr, char *buf)
@@ -186,18 +212,51 @@ static struct attribute *ashs_attribs[] = {
 static const struct attribute_group ashs_attr_group = {
 	.attrs = ashs_attribs,
 };
-
 static int asus_ashs_add(struct acpi_device *device)
 {
-	int result;
-	wapf = ashs_get_int(NULL,"\\_SB.ATKD.WAPF");
-	result = sysfs_create_group(&device->dev.kobj, &ashs_attr_group);
-	return result;
+	int err;
+
+#ifdef _INPUT_KILL_
+	inputdev = input_allocate_device();
+	if (!inputdev)
+		return -ENOMEM;
+
+	inputdev->name = "ASHS RF Switch";
+	inputdev->phys = DRIVER_NAME "/input0";
+	inputdev->id.bustype = BUS_HOST;
+	inputdev->dev.parent = & device->dev;
+	set_bit(EV_REP, inputdev->evbit);
+
+	err = sparse_keymap_setup(inputdev, ashs_keymap, NULL);
+	if (err)
+		goto err_free_dev;
+
+	err = input_register_device(inputdev);
+	if (err)
+		goto err_free_keymap;
+#endif
+
+	err = sysfs_create_group(&device->dev.kobj, &ashs_attr_group);
+#ifdef _INPUT_KILL_
+	if(!err)
+		return 0;
+
+err_free_keymap:
+	sparse_keymap_free(inputdev);
+err_free_dev:
+	input_free_device(inputdev);
+#endif
+	return err;
 }
 	
 static int asus_ashs_remove(struct acpi_device *device)
 {
 	sysfs_remove_group(&device->dev.kobj, &ashs_attr_group);
+#ifdef	_INPUT_KILL_
+	sparse_keymap_free(inputdev);
+	input_unregister_device(inputdev);
+	input_free_device(inputdev);
+#endif
 	return 0;
 }
 
@@ -219,7 +278,6 @@ static int __init ashs_init(void)
 			"Error registering driver\n"));
 		return -ENODEV;
 	}
-
 	return 0;
 }
 
