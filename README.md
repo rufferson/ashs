@@ -3,6 +3,12 @@ ASHS Driver - ACPI Wireless Switch
 
 ASUS Wireless switch Driver to handle Fn key action.
 
+Note: The driver is written for ASUS laptops with Airplane mode LED
+(eg. Transformer Trio) so the led should be on only when all radios 
+are off. On boot LED is on, presumably indicating that till drivers
+are loaded radios are off. Hence the driver is switching off the led
+on load - if at least one radio is on (rfkill preserves its state).
+
 Device /sys/bus/acpi/devices/ATK4002:00 (ACPI path: \_SB_.ASHS). 
 
 Currently implements exact functionality of the ACPI handler without 
@@ -34,6 +40,7 @@ ACPI objects:
 - \OWGS() - returns current status of the led
 - \WLDP - Wireless Device Presence flag
 - \BTDP - Bluetooth Device Presence flag
+- \OHWR - Hardware Resources - LSB bit 8 reflects BTDP
 - \WRST - Wireless Runtime Status
 - \BRST - Bluetooth Runtime Status
 - \OWLD(st) - sets Operational state of Wireless Device

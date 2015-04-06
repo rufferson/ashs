@@ -116,8 +116,10 @@ static void ashs_toggle_wireless(void) {
 		//ACPI_CR(status,"OWGD");
 		//status = acpi_execute_simple_method(NULL,"\\OWLD",val);
 		//ACPI_CR(status,"OWLD");
+		// Send input event (rfkill will react - soft switch)
 		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",key);
 		ACPI_CR(status,"_SB_.ATKD.IANE");
+		// Do the job here explicitly
 		status = acpi_execute_simple_method(NULL,"\\OBTD",val);
 		ACPI_CR(status,"OBTD");
 	} else {
@@ -149,6 +151,7 @@ static void ashs_toggle_wireless(void) {
 		//ACPI_CR(status,"OBTD");
 		//status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.CWAP",wapf);
 		//ACPI_CR(status,"CWAP(wapf)");
+		// Send corresponding acpi input events for rfkills to react
 		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",wk);
 		ACPI_CR(status,"_SB_.ATKD.IANE(W)");
 		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",bk);
@@ -163,8 +166,8 @@ static ssize_t ashs_show_sts(struct device *dev,
 
 	return sprintf(buf,
 			"Wireless ACPI :\n"
-			"\\OWGS:\t%d\n"
 			"\\OHWR:\t%d\n"
+			"\\OWGS:\t%d\n"
 			"\\ORST:\t%d\n"
 			"\\_SB_.WLDP:\t%d\n"
 			"\\_SB_.WRST:\t%d\n"
@@ -215,6 +218,12 @@ static const struct attribute_group ashs_attr_group = {
 static int asus_ashs_add(struct acpi_device *device)
 {
 	int err;
+
+	// If some radio is on
+	ashs_refresh_internals();
+	// Toggle the LED, it's Airplane mode now (radio emission is off)
+	if(wrst || brst)
+		err = ashs_set_int(NULL, "\\_SB_.ASHS.HSWC", 0);
 
 #ifdef _INPUT_KILL_
 	inputdev = input_allocate_device();
