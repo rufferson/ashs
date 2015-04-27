@@ -9,6 +9,13 @@ are off. On boot LED is on, presumably indicating that till drivers
 are loaded radios are off. Hence the driver is switching off the led
 on load - if at least one radio is on (rfkill preserves its state).
 
+Note: The driver deals directly with ACPI internals, which may interfere
+with RFKILL subsystem, especially WMI rfkills. However WMI rfkills may
+also affect real PCI devices. Together with systemd-rfkill@ service
+restoring last rfkill state - may create quite a headache.
+Use direct ACPI knobs (owg, wld) to change hard state of the rfkill.
+To function properly wld requires wapf to remain 0.
+
 Device /sys/bus/acpi/devices/ATK4002:00 (ACPI path: \_SB_.ASHS). 
 
 Currently implements exact functionality of the ACPI handler without 
@@ -53,16 +60,15 @@ when bit 0 is set (LSB) - acts as airplane mode switch - toggles both radios
 otherwise switches radios in sequence WL/BT->wl/BT->WL/bt->wl/bt->WL/BT
 
 Additionally, OWLD does not perform actual hardware switch unless bits 0 and
-2 are not zero (either of them is set) making dry run. ACPI code is however
-implemented with error (as per my understanding) making LAnd instead of And.
-That means that OWLD never works.
-
-The driver makes a workaround for that by temporarely setting WAPF to 0 and
-restoring it after OWLD.
+2 are not zero (either of them is set) making dry run. 
 
 also see modinfo asus-nb-wmi on how to set WAPF from userspace
 
-- \_SB_.ATKD.CWAP - Change WAPF
+- \_SB_.ATKD.CWAP - Change WAPF - this call is used by ACPI for WMI set.
+
+Note: CWAP uses bitwise OR to set bits in WAPF - that means you can only
+set bits, not clear them. So once WAPF is non-zero you can never reset it back.
+Only after reboot.
 
 - \_SB_.ATKD.IANE - sends ACPI key event
 

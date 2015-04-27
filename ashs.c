@@ -27,6 +27,13 @@ MODULE_LICENSE("GPL");
 #define DRIVER_NAME "ashs"
 ACPI_MODULE_NAME(MODULE_NAME)
 
+static int wapf = -1;
+static int skip = 0;
+module_param(skip, uint, 0444);
+MODULE_PARM_DESC(skip, "Skip initialisation, just load the config (*0 disabled, 1 enabled)");
+module_param(wapf, uint, 0444);
+MODULE_PARM_DESC(wapf, "Override (and set) WAPF value on load");
+
 static int asus_ashs_add(struct acpi_device *dev);
 static int asus_ashs_remove(struct acpi_device *dev);
 static void asus_ashs_notify(struct acpi_device *dev, u32 event);
@@ -37,12 +44,12 @@ static const struct acpi_device_id asus_ashs_dev_ids[] = {
 };
 MODULE_DEVICE_TABLE(acpi, asus_ashs_dev_ids);
 
-int wapf = 0;
-int wldp = 0;
-int btdp = 0;
-int wrst = 0;
-int brst = 0;
-bool toggle = true;
+static int wldp = 0;
+static int btdp = 0;
+static int wrst = 0;
+static int brst = 0;
+static int owgs = 0;
+//static bool toggle = true;
 
 static struct acpi_driver asus_ashs_driver = {
 	.name  = DRIVER_NAME,
@@ -88,10 +95,33 @@ static u32 ashs_get_int(acpi_handle handle, const char *func)
 static void ashs_refresh_internals(void)
 {
 	wapf = ashs_get_int(NULL,"\\_SB.ATKD.WAPF");
-	wldp = ashs_get_int(NULL,"\\_SB_.WLDP"),
-	wrst = ashs_get_int(NULL,"\\_SB_.WRST"),
+	wldp = ashs_get_int(NULL,"\\_SB_.WLDP");
+	wrst = ashs_get_int(NULL,"\\_SB_.WRST");
 	btdp = ashs_get_int(NULL,"\\_SB_.BTDP");
 	brst = ashs_get_int(NULL,"\\_SB_.BRST");
+	owgs = ashs_get_int(NULL,"\\OWGS");
+}
+/* Using internal state, call refresh_internal unless state is known */
+static void ashs_sync_led(void) {
+	int err=0,wgd=1;
+	// Toggle the LED, it's Airplane mode now (radio emission is off)
+	if(wrst || brst)
+		wgd=0;
+	// WMI RFKill reads WRST to initialize switch HW state
+	// asus_wmi_get_devstate_simple(asus, ASUS_WMI_DEVID_WLAN)
+	// If WRST is 0(off) it will block WLAN in hw-kill state
+	// If WRST os 1(on) it will enalbe wireless and the LED
+	// resetting our OWGD.
+	//err = ashs_set_int(NULL, "\\OWLD", 0);
+	//pr_info("asus_ashs_add: wld off[%x]: %d\n", err, 
+	//			ashs_get_int(NULL, "\\WRST"));
+	// if we do that - led remains off, but rfkill kills wifi
+	// And since WAPF is 0 - it makes hard kill state.
+	// But if WAPF is not 0 - wmi is already loaded
+	if(owgs != wgd)
+		err = ashs_set_int(NULL, "\\OWGD", wgd);
+	pr_info("ashs_sync_led: wgd set(%d)[%x]: %d\n", wgd, err,
+			ashs_get_int(NULL, "\\OWGS"));
 }
 static void ashs_toggle_wireless(void) {
 #ifdef	_INPUT_KILL_ // we can certainly re-invent the wheel 
@@ -163,40 +193,85 @@ static ssize_t ashs_show_sts(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	ashs_refresh_internals();
+	ashs_sync_led();
 
 	return sprintf(buf,
 			"Wireless ACPI :\n"
 			"\\OHWR:\t%d\n"
-			"\\OWGS:\t%d\n"
 			"\\ORST:\t%d\n"
+			"\\OWGS:\t%d\n"
 			"\\_SB_.WLDP:\t%d\n"
 			"\\_SB_.WRST:\t%d\n"
 			"\\_SB_.BTDP:\t%d\n"
 			"\\_SB_.BRST:\t%d\n"
 			"\\_SB_.ATKD.WAPF:\t%d\n",
 			ashs_get_int(NULL,"\\OHWR"),
-			ashs_get_int(NULL,"\\OWGS"),
 			ashs_get_int(NULL,"\\ORST"),
+			owgs,
 			wldp,
 			wrst,
 			btdp,
 			brst,
 			wapf);
 }
-static ssize_t ashs_set_owg(struct device *dev,
-	struct device_attribute *attr, const char *buf, size_t len)
-{
+static int ashs_parse_num(const char *buf, uint *num) {
 	int ret;
-	uint num;
 
 	if (!buf)
 		return -EINVAL;
-	ret = kstrtouint(buf, 0, &num);
-	if (ret == -EINVAL || num < 0 || num > 1)
+	ret = kstrtouint(buf, 0, num);
+	if (ret == -EINVAL || *num < 0 || *num > 255)
 		return -EINVAL;
-	return ashs_set_int(NULL,"\\_SB_.ASHS.HSWC",num);
+	return 0;
 }
+static ssize_t ashs_set_owg(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t len)
+{
+	uint num;
 
+	if (ashs_parse_num(buf,&num))
+		return -EINVAL;
+	pr_info("ashs_set_owg: %d\n", num);
+	ashs_set_int(NULL,"\\_SB_.ASHS.HSWC",num);
+	return len;
+}
+static ssize_t ashs_set_wap(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t len)
+{	acpi_status status;
+	uint num;
+
+	if (ashs_parse_num(buf,&num))
+		return -EINVAL;
+	wapf = num;
+	pr_info("ashs_set_wap: %d\n", num);
+	status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.CWAP",wapf);
+	ACPI_CR(status,"CWAP(wapf)");
+	return len;
+}
+static ssize_t ashs_set_wld(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t len)
+{	acpi_status status;
+	uint num;
+
+	if (ashs_parse_num(buf,&num))
+		return -EINVAL;
+	pr_info("ashs_set_wld: %d\n", num);
+	status = acpi_execute_simple_method(NULL,"\\OWLD",num);
+	ACPI_CR(status,"OWLD(x)");
+	return len;
+}
+static ssize_t ashs_set_btd(struct device *dev,
+	struct device_attribute *attr, const char *buf, size_t len)
+{	acpi_status status;
+	uint num;
+
+	if (ashs_parse_num(buf,&num))
+		return -EINVAL;
+	pr_info("ashs_set_btd: %d\n", num);
+	status = acpi_execute_simple_method(NULL,"\\OBTD",num);
+	ACPI_CR(status,"OBTD(x)");
+	return len;
+}
 /**
  *  0-1 - OWGD(param), ret 1
  *  2 - get status (ret 4 or 5)
@@ -206,9 +281,15 @@ static ssize_t ashs_set_owg(struct device *dev,
  *  80 - ret 1
  */
 static DEVICE_ATTR(owg, S_IRUGO | S_IWUSR, ashs_show_sts, ashs_set_owg);
+static DEVICE_ATTR(wap, S_IWUSR, NULL, ashs_set_wap);
+static DEVICE_ATTR(wld, S_IWUSR, NULL, ashs_set_wld);
+static DEVICE_ATTR(btd, S_IWUSR, NULL, ashs_set_btd);
 
 static struct attribute *ashs_attribs[] = {
 	&dev_attr_owg.attr,
+	&dev_attr_wap.attr,
+	&dev_attr_wld.attr,
+	&dev_attr_btd.attr,
 	NULL
 };
 
@@ -219,12 +300,14 @@ static int asus_ashs_add(struct acpi_device *device)
 {
 	int err;
 
+	if(wapf>=0)
+		err = ashs_set_int(NULL,"\\_SB_.ATKD.CWAP",wapf);
+
 	// If some radio is on
 	ashs_refresh_internals();
 	// Toggle the LED, it's Airplane mode now (radio emission is off)
-	if(wrst || brst)
-		err = ashs_set_int(NULL, "\\_SB_.ASHS.HSWC", 0);
-
+	if(!skip)
+		ashs_sync_led();
 #ifdef _INPUT_KILL_
 	inputdev = input_allocate_device();
 	if (!inputdev)
@@ -244,9 +327,9 @@ static int asus_ashs_add(struct acpi_device *device)
 	if (err)
 		goto err_free_keymap;
 #endif
-
 	err = sysfs_create_group(&device->dev.kobj, &ashs_attr_group);
 #ifdef _INPUT_KILL_
+
 	if(!err)
 		return 0;
 

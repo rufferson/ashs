@@ -12,3 +12,6 @@ clean:
 
 install:
 	$(MAKE) -C $(KDIR) M=$(PWD) modules_install
+
+uninstall:
+	rm -f /lib/modules/$(KVERSION)/extra/ashs.*
