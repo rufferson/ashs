@@ -30,7 +30,8 @@ ACPI_MODULE_NAME(MODULE_NAME)
 static int wapf = -1;
 static int skip = 0;
 module_param(skip, uint, 0444);
-MODULE_PARM_DESC(skip, "Skip initialisation, just load the config (*0 disabled, 1 enabled)");
+MODULE_PARM_DESC(skip, "Skip initialisation, just load the config"
+		"(*0 disabled, 1 enabled)");
 module_param(wapf, uint, 0444);
 MODULE_PARM_DESC(wapf, "Override (and set) WAPF value on load");
 
@@ -74,9 +75,11 @@ static u32 ashs_set_int(acpi_handle handle, const char *func, int param)
 	in_obj.type = ACPI_TYPE_INTEGER;
 	in_obj.integer.value = param;
 
-	status = acpi_evaluate_integer(handle, (acpi_string) func, &params, &ret);
+	status = acpi_evaluate_integer(handle, (acpi_string) func,
+			&params, &ret);
 	if(!ACPI_SUCCESS(status))
-	    ACPI_ERROR((AE_INFO,"Integer evaluation(set) for %s failed[%d]",func,status));
+	    ACPI_ERROR((AE_INFO,"Integer evaluation(set) for %s failed[%d]",
+				    func, status));
 
 	return ret;
 }
@@ -88,7 +91,8 @@ static u32 ashs_get_int(acpi_handle handle, const char *func)
 	status = acpi_evaluate_integer(handle, (acpi_string) func, NULL, &val);
 
 	if(!ACPI_SUCCESS(status))
-	    ACPI_ERROR((AE_INFO,"Integer evaluation(get) for %s failed[%d]",func,status));
+	    ACPI_ERROR((AE_INFO, "Integer evaluation(get) for %s failed[%d]",
+				    func, status));
 
 	return val;
 }
@@ -107,17 +111,20 @@ static void ashs_sync_led(void) {
 	// Toggle the LED, it's Airplane mode now (radio emission is off)
 	if(wrst || brst)
 		wgd=0;
-	// WMI RFKill reads WRST to initialize switch HW state
+	// WMI RFKill reads WRST to initialize switch hard state:
 	// asus_wmi_get_devstate_simple(asus, ASUS_WMI_DEVID_WLAN)
 	// If WRST is 0(off) it will block WLAN in hw-kill state
-	// If WRST os 1(on) it will enalbe wireless and the LED
-	// resetting our OWGD.
+	// If WRST os 1(on) it will enalbe wireless and the LED resetting
+	// led's wmi rfkill state (OWGD).
+	// So to make wmi rfkill know switch is off we need to set WRST to 0
 	//err = ashs_set_int(NULL, "\\OWLD", 0);
 	//pr_info("asus_ashs_add: wld off[%x]: %d\n", err, 
 	//			ashs_get_int(NULL, "\\WRST"));
-	// if we do that - led remains off, but rfkill kills wifi
-	// And since WAPF is 0 - it makes hard kill state.
-	// But if WAPF is not 0 - wmi is already loaded
+	// if we do that - led remains off, however wmi rfkill kills wifi by
+	// unplugging device from pci. which is hard rfkill state for phy.
+	// That means we shouldn't do OWLD just for the sake of the led, and
+	// instead periodically poll wireless state and update the led.
+	// kernel's workqueue could be a good way to go with that.
 	if(owgs != wgd)
 		err = ashs_set_int(NULL, "\\OWGD", wgd);
 	pr_info("ashs_sync_led: wgd set(%d)[%x]: %d\n", wgd, err,
@@ -125,33 +132,46 @@ static void ashs_sync_led(void) {
 }
 static void ashs_toggle_wireless(void) {
 #ifdef	_INPUT_KILL_ // we can certainly re-invent the wheel 
-	sparse_keymap_report_event(inputdev,0x88,1,true);
+	sparse_keymap_report_event(inputdev, 0x88, 1, true);
 #else
 	acpi_status status;
-#define ACPI_CR(x,f) if(!ACPI_SUCCESS(x)) ACPI_ERROR((AE_INFO,"Method Execution for %s failed[%d]",f,x))
+#define ACPI_CR(x,f) if(!ACPI_SUCCESS(x))\
+	ACPI_ERROR((AE_INFO, "Method Execution for %s failed[%d]", f, x))
 	ashs_refresh_internals();
 	if((wapf & 4)) {
 		// Send radio toggle event to rfkill 
-		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",0x88);
-		ACPI_CR(status,"_SB_.ATKD.IANE(0x88)");
-	} else if((wapf & 0x2)) {
+		status = acpi_execute_simple_method(NULL,
+				"\\_SB_.ATKD.IANE", 0x88);
+		ACPI_CR(status, "_SB_.ATKD.IANE(0x88)");
+	} else if((wapf & 0x2) || (wapf & 0x1)) {
 		// BThw WLsw
 		int key=0x5D, val=1;
+		// key=KEY_WLAN TOGGLE - rfkill always toggles
 		if(wrst || brst) {
 			val = 0;
-			//key = 0x74;
 		}
-		// OWLD doesnt switch off the wireless - is broken
-		//status = acpi_execute_simple_method(NULL,"\\OWGD",val);
-		//ACPI_CR(status,"OWGD");
-		//status = acpi_execute_simple_method(NULL,"\\OWLD",val);
-		//ACPI_CR(status,"OWLD");
-		// Send input event (rfkill will react - soft switch)
-		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",key);
-		ACPI_CR(status,"_SB_.ATKD.IANE");
-		// Do the job here explicitly
-		status = acpi_execute_simple_method(NULL,"\\OBTD",val);
-		ACPI_CR(status,"OBTD");
+		// OWLD doesnt switch off the wireless when wapf > 0
+		// hence ignore the case when wapf & 2
+		//if(wapf & 2) {
+		//	status = acpi_execute_simple_method(NULL,"\\OWLD",val);
+		//	ACPI_CR(status, "OWLD");
+		//} else {
+			// Send input event (rfkill will react - soft switch)
+			status = acpi_execute_simple_method(NULL,
+					"\\_SB_.ATKD.IANE", key);
+			ACPI_CR(status, "_SB_.ATKD.IANE");
+		//}
+		if(wapf & 1) {
+			status = acpi_execute_simple_method(NULL,
+					"\\OBTD",val);
+			ACPI_CR(status, "OBTD");
+		} else {
+			// Send input event (rfkill will react - soft switch)
+			key = (val) ? 0x7D : 0x7E;
+			status = acpi_execute_simple_method(NULL,
+					"\\_SB_.ATKD.IANE", key);
+			ACPI_CR(status, "_SB_.ATKD.IANE");
+		}
 	} else {
 		// Toggle radios in sequence
 		// Assuming both are off - enable both
@@ -171,22 +191,21 @@ static void ashs_toggle_wireless(void) {
 			wk = 0x5F;
 			bk = 0x7E;
 		}
-		//status = acpi_execute_simple_method(NULL,"\\OWGD",(ws || bs));
-		//ACPI_CR(status,"OWGD");
-		//status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.CWAP",0);
-		//ACPI_CR(status,"CWAP(0)");
-		//status = acpi_execute_simple_method(NULL,"\\OWLD",ws);
-		//ACPI_CR(status,"OWLD");
-		//status = acpi_execute_simple_method(NULL,"\\OBTD",bs);
-		//ACPI_CR(status,"OBTD");
-		//status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.CWAP",wapf);
-		//ACPI_CR(status,"CWAP(wapf)");
-		// Send corresponding acpi input events for rfkills to react
-		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",wk);
-		ACPI_CR(status,"_SB_.ATKD.IANE(W)");
-		status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",bk);
-		ACPI_CR(status,"_SB_.ATKD.IANE(B)");
+		if(wapf) {
+			// Send corresponding acpi input events to rfkills: soft switch
+			status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",wk);
+			ACPI_CR(status,"_SB_.ATKD.IANE(W)");
+			status = acpi_execute_simple_method(NULL,"\\_SB_.ATKD.IANE",bk);
+			ACPI_CR(status,"_SB_.ATKD.IANE(B)");
+		} else {
+			// call ACPI to switch on/off the devices: hard switch
+			status = acpi_execute_simple_method(NULL,"\\OWLD",ws);
+			ACPI_CR(status,"OWLD");
+			status = acpi_execute_simple_method(NULL,"\\OBTD",bs);
+			ACPI_CR(status,"OBTD");
+		}
 	}
+	ashs_sync_led();
 #endif /* _INPUT_KILL_ */
 }
 static ssize_t ashs_show_sts(struct device *dev,
