@@ -4,6 +4,9 @@
 #include <linux/types.h>
 #include <linux/acpi.h>
 
+#include <linux/workqueue.h>
+static struct delayed_work ashs_led_sync;
+
 #ifdef _INPUT_KILL_
 #include <linux/input.h>
 #include <linux/input/sparse-keymap.h>
@@ -17,7 +20,7 @@ static const struct key_entry ashs_keymap[] = {
 	{ KE_KEY, 0x88, { KEY_RFKILL  } }, /* Radio Toggle Key */
 	{ KE_END, 0},
 };
-#endif
+#endif /* _INPUT_RFKILL_ */
 
 MODULE_AUTHOR("Ruslan Marchenko <me@ruff.mobi>");
 MODULE_DESCRIPTION("ASUS Wireless Radio Control Driver");
@@ -50,7 +53,6 @@ static int btdp = 0;
 static int wrst = 0;
 static int brst = 0;
 static int owgs = 0;
-//static bool toggle = true;
 
 static struct acpi_driver asus_ashs_driver = {
 	.name  = DRIVER_NAME,
@@ -106,7 +108,7 @@ static void ashs_refresh_internals(void)
 	owgs = ashs_get_int(NULL,"\\OWGS");
 }
 /* Using internal state, call refresh_internal unless state is known */
-static void ashs_sync_led(void) {
+static void ashs_sync_led(struct work_struct *work) {
 	int err=0,wgd=1;
 	// Toggle the LED, it's Airplane mode now (radio emission is off)
 	if(wrst || brst)
@@ -127,8 +129,10 @@ static void ashs_sync_led(void) {
 	// kernel's workqueue could be a good way to go with that.
 	if(owgs != wgd)
 		err = ashs_set_int(NULL, "\\OWGD", wgd);
-	pr_info("ashs_sync_led: wgd set(%d)[%x]: %d\n", wgd, err,
+	if(!work)
+		pr_info("ashs_sync_led: wgd set(%d)[%x]: %d\n", wgd, err,
 			ashs_get_int(NULL, "\\OWGS"));
+	queue_delayed_work(system_power_efficient_wq, &ashs_led_sync, 1000);
 }
 static void ashs_toggle_wireless(void) {
 #ifdef	_INPUT_KILL_ // we can certainly re-invent the wheel 
@@ -205,14 +209,14 @@ static void ashs_toggle_wireless(void) {
 			ACPI_CR(status,"OBTD");
 		}
 	}
-	ashs_sync_led();
+	//ashs_sync_led(NULL);
 #endif /* _INPUT_KILL_ */
 }
 static ssize_t ashs_show_sts(struct device *dev,
 	struct device_attribute *attr, char *buf)
 {
 	ashs_refresh_internals();
-	ashs_sync_led();
+	//ashs_sync_led(NULL);
 
 	return sprintf(buf,
 			"Wireless ACPI :\n"
@@ -325,8 +329,9 @@ static int asus_ashs_add(struct acpi_device *device)
 	// If some radio is on
 	ashs_refresh_internals();
 	// Toggle the LED, it's Airplane mode now (radio emission is off)
+	INIT_DELAYED_WORK(&ashs_led_sync, ashs_sync_led);
 	if(!skip)
-		ashs_sync_led();
+		ashs_sync_led(NULL);
 #ifdef _INPUT_KILL_
 	inputdev = input_allocate_device();
 	if (!inputdev)
@@ -362,6 +367,7 @@ err_free_dev:
 	
 static int asus_ashs_remove(struct acpi_device *device)
 {
+	cancel_delayed_work_sync(&ashs_led_sync);
 	sysfs_remove_group(&device->dev.kobj, &ashs_attr_group);
 #ifdef	_INPUT_KILL_
 	sparse_keymap_free(inputdev);
